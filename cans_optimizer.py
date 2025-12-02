@@ -219,7 +219,7 @@ class CANS_CSD(Optimizer):
 
                     param_state = self.state[p]
                     momentum_buffer = param_state.get('momentum_buffer')
-                    g_t = g.T
+                    g_t = -g.T
                     if momentum_buffer is None:
                         momentum_buffer = torch.zeros_like(g_t)
                         param_state['momentum_buffer'] = momentum_buffer
