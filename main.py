@@ -20,13 +20,14 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 import torchnet as tnt
 from torchnet.engine import Engine
-from utils import cast, data_parallel
+from utils import cast, data_parallel, resolve_device, set_default_device
 import torch.backends.cudnn as cudnn
 from resnet import resnet
 from vgg import vgg
 
 import grassmann_optimizer
 import stiefel_optimizer
+import cans_optimizer
 from gutils import unit, qr_retraction
 
 cudnn.benchmark = True
@@ -37,7 +38,7 @@ parser.add_argument('--model', default='resnet', type=str)
 parser.add_argument('--depth', default=16, type=int)
 parser.add_argument('--width', default=1, type=float)
 parser.add_argument('--dataset', default='CIFAR10', type=str)
-parser.add_argument('--dataroot', default='/scratch/liju2/data/', type=str)
+parser.add_argument('--dataroot', default='./data', type=str)
 parser.add_argument('--dtype', default='float', type=str)
 parser.add_argument('--groups', default=1, type=int)
 parser.add_argument('--nthread', default=4, type=int)
@@ -58,15 +59,38 @@ parser.add_argument('--lr_decay_ratio', default=0.2, type=float)
 parser.add_argument('--resume', default='', type=str)
 parser.add_argument('--optim_method', default='SGD', type=str)
 parser.add_argument('--randomcrop_pad', default=4, type=float)
+parser.add_argument('--cans_retraction_iters', default=1, type=int,
+                    help='number of CANS retraction refinement steps')
+parser.add_argument('--cans_use_qr', action='store_true',
+                    help='use QR instead of CANS retraction inside CANS optimizers')
 
 # Device options
-parser.add_argument('--cuda', action='store_true')
+parser.add_argument('--device', default='auto', type=str,
+                    help='device to run on: auto, cpu, cuda, or mps')
 parser.add_argument('--save', default='', type=str,
                     help='save parameters and logs in this folder')
 parser.add_argument('--ngpu', default=1, type=int,
                     help='number of GPUs to use for training')
 parser.add_argument('--gpu_id', default='0', type=str,
                     help='id(s) for CUDA_VISIBLE_DEVICES')
+
+def _to_float32(x):
+    return x.astype(np.float32)
+
+
+def _hwc_to_chw_float32(x):
+    return x.transpose(2, 0, 1).astype(np.float32)
+
+
+class Compose:
+    def __init__(self, transforms):
+        self.transforms = transforms
+
+    def __call__(self, x):
+        for t in self.transforms:
+            x = t(x)
+        return x
+
 
 def create_dataset(opt, mode):
     if opt.dataset == 'CIFAR10':
@@ -80,14 +104,14 @@ def create_dataset(opt, mode):
         std = [1.0, 1.0, 1.0]
 
 
-    convert = tnt.transform.compose([
-        lambda x: x.astype(np.float32),
+    convert = Compose([
+        _to_float32,
         T.Normalize(mean, std),
-        lambda x: x.transpose(2,0,1).astype(np.float32),
+        _hwc_to_chw_float32,
         torch.from_numpy,
     ])
 
-    train_transform = tnt.transform.compose([
+    train_transform = Compose([
         T.RandomHorizontalFlip(),
         T.Pad(opt.randomcrop_pad, cv2.BORDER_REFLECT),
         T.RandomCrop(32),
@@ -96,26 +120,63 @@ def create_dataset(opt, mode):
 
     ds = getattr(datasets, opt.dataset)(opt.dataroot, train=mode, download=True)
     smode = 'train' if mode else 'test'
-    ds = tnt.dataset.TensorDataset([getattr(ds, smode + '_data'),
-                                    getattr(ds, smode + '_labels')])
+
+    def _get_attr(obj, primary, fallback=None):
+        value = getattr(obj, primary, None)
+        if value is not None:
+            return value
+        if fallback:
+            value = getattr(obj, fallback, None)
+            if value is not None:
+                return value
+        raise AttributeError(
+            f"'{type(obj).__name__}' object has no attribute '{primary}' or '{fallback}'"
+        )
+
+    data = _get_attr(ds, f"{smode}_data", "data")
+    labels = _get_attr(ds, f"{smode}_labels", "targets")
+
+    # torchvision>=0.10 returns labels as a list; convert to numpy for transforms
+    if isinstance(labels, list):
+        labels = np.array(labels)
+
+    ds = tnt.dataset.TensorDataset([data, labels])
     return ds.transform({0: train_transform if mode else convert})
+
+
+def resolve_dataroot(path):
+    dataroot = os.path.abspath(os.path.expanduser(path))
+    try:
+        os.makedirs(dataroot, exist_ok=True)
+    except OSError as e:
+        raise RuntimeError(
+            f"Unable to create dataset directory '{dataroot}'. "
+            "Please set --dataroot to a writable location."
+        ) from e
+    return dataroot
 
 
 def main():
     opt = parser.parse_args()
+    opt.dataroot = resolve_dataroot(opt.dataroot)
     print('parsed options:', vars(opt))
     epoch_step = json.loads(opt.epoch_step)
     num_classes = 100 if opt.dataset == 'CIFAR100' else 10
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpu_id
-    # to prevent opencv from initializing CUDA in workers
-    torch.randn(8).cuda()
-    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+    device = resolve_device(opt.device)
+    set_default_device(device)
+    if device.type == 'cuda':
+        os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpu_id
+        cudnn.benchmark = True
+    else:
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+        cudnn.benchmark = False
+    print('Using device:', device)
 
     def create_iterator(mode):
         ds = create_dataset(opt, mode)
         return ds.parallel(batch_size=opt.batchSize, shuffle=mode,
-                           num_workers=opt.nthread, pin_memory=True)
+                           num_workers=opt.nthread, pin_memory=(device.type=='cuda'))
 
     train_loader = create_iterator(True)
     test_loader = create_iterator(False)
@@ -128,7 +189,7 @@ def main():
     f, params, stats = model(opt.depth, opt.width, num_classes)
 
     key_g = []
-    if opt.optim_method in ['SGDG', 'AdamG', 'Cayley_SGD', 'Cayley_Adam'] :
+    if opt.optim_method in ['SGDG', 'AdamG', 'Cayley_SGD', 'Cayley_Adam', 'CANS_SGD', 'CANS_Adam'] :
         param_g = []
         param_e0 = []
         param_e1 = []
@@ -139,12 +200,12 @@ def main():
                 key_g.append(key)
                 if opt.optim_method in ['SGDG', 'AdamG']:
                     # initlize to scale 1
-                    unitp, _ = unit(value.data.view(value.size(0), -1)) 
+                    unitp, _ = unit(value.data.view(value.size(0), -1))
                     value.data.copy_(unitp.view(value.size()))
-                elif opt.optim_method in ['Cayley_SGD', 'Cayley_Adam']:
+                elif opt.optim_method in ['Cayley_SGD', 'Cayley_Adam', 'CANS_SGD', 'CANS_Adam']:
                     # initlize to orthogonal matrix
-                    q = qr_retraction(value.data.view(value.size(0), -1)) 
-                    value.data.copy_(q.view(value.size()))               
+                    q = qr_retraction(value.data.view(value.size(0), -1))
+                    value.data.copy_(q.view(value.size()))
             elif 'bn' in key or 'bias' in key:
                 param_e0.append(value)
             else:
@@ -179,11 +240,37 @@ def main():
             dict_e1 = {'params':param_e1,'lr':lr,'momentum':0.9,'stiefel':False,'weight_decay':opt.weightDecay,'nesterov':True}
             return stiefel_optimizer.AdamG([dict_g, dict_e0, dict_e1])
 
+        elif opt.optim_method == 'CANS_SGD':
+            dict_g = {
+                'params': param_g,
+                'lr': lrg,
+                'momentum': 0.9,
+                'stiefel': True,
+                'retraction_iters': opt.cans_retraction_iters,
+                'use_qr': opt.cans_use_qr,
+            }
+            dict_e0 = {'params': param_e0, 'lr': lr, 'momentum': 0.9, 'stiefel': False, 'weight_decay': opt.bnDecay, 'nesterov': True}
+            dict_e1 = {'params': param_e1, 'lr': lr, 'momentum': 0.9, 'stiefel': False, 'weight_decay': opt.weightDecay, 'nesterov': True}
+            return cans_optimizer.CANS_SGD([dict_g, dict_e0, dict_e1])
+
+        elif opt.optim_method == 'CANS_Adam':
+            dict_g = {
+                'params': param_g,
+                'lr': lrg,
+                'momentum': 0.9,
+                'stiefel': True,
+                'retraction_iters': opt.cans_retraction_iters,
+                'use_qr': opt.cans_use_qr,
+            }
+            dict_e0 = {'params': param_e0, 'lr': lr, 'momentum': 0.9, 'stiefel': False, 'weight_decay': opt.bnDecay, 'nesterov': True}
+            dict_e1 = {'params': param_e1, 'lr': lr, 'momentum': 0.9, 'stiefel': False, 'weight_decay': opt.weightDecay, 'nesterov': True}
+            return cans_optimizer.CANS_Adam([dict_g, dict_e0, dict_e1])
+
     optimizer = create_optimizer(opt, opt.lr, opt.lrg)
 
     epoch = 0
     if opt.resume != '':
-        state_dict = torch.load(opt.resume)
+        state_dict = torch.load(opt.resume, map_location=device)
         epoch = state_dict['epoch']
         params_tensors, stats = state_dict['params'], state_dict['stats']
         for k, v in list(params.items()):
@@ -210,8 +297,8 @@ def main():
     timer_train = tnt.meter.TimeMeter('s')
     timer_test = tnt.meter.TimeMeter('s')
 
-    if not os.path.exists(opt.save):
-        os.mkdir(opt.save)
+    if opt.save:
+        os.makedirs(opt.save, exist_ok=True)
 
     def h(sample):
         inputs = Variable(cast(sample[0], opt.dtype))

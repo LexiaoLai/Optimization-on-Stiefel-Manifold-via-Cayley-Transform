@@ -101,9 +101,7 @@ class SGDG(Optimizer):
                     
                     param_state = self.state[p]
                     if 'momentum_buffer' not in param_state:
-                        param_state['momentum_buffer'] = torch.zeros(g.t().size())
-                        if p.is_cuda:
-                            param_state['momentum_buffer'] = param_state['momentum_buffer'].cuda()
+                        param_state['momentum_buffer'] = torch.zeros(g.t().size(), device=p.device)
                             
                     V = param_state['momentum_buffer']
                     V = momentum * V - g.t()   
@@ -221,11 +219,8 @@ class AdamG(Optimizer):
                     param_state = self.state[p]
                     if 'm_buffer' not in param_state:
                         size=p.size()
-                        param_state['m_buffer'] = torch.zeros([int(np.prod(size[1:])), size[0]])
-                        param_state['v_buffer'] = torch.zeros([1])
-                        if p.is_cuda:
-                            param_state['m_buffer'] = param_state['m_buffer'].cuda()
-                            param_state['v_buffer'] = param_state['v_buffer'].cuda()
+                        param_state['m_buffer'] = torch.zeros([int(np.prod(size[1:])), size[0]], device=p.device)
+                        param_state['v_buffer'] = torch.zeros([1], device=p.device)
 
                         param_state['beta1_power'] = beta1
                         param_state['beta2_power'] = beta2
