@@ -152,6 +152,121 @@ class CANS_SGD(Optimizer):
         return loss
 
 
+class CANS_CSD(Optimizer):
+    r"""Stochastic Riemannian CSD with momentum using CANS polar LMO."""
+
+    def __init__(
+        self,
+        params,
+        lr=required,
+        momentum=0,
+        dampening=0,
+        weight_decay=0,
+        nesterov=False,
+        stiefel=True,
+        omega=0,
+        grad_clip=None,
+        use_qr=False,
+        retraction_iters=1,
+    ):
+        defaults = dict(
+            lr=lr,
+            momentum=momentum,
+            dampening=dampening,
+            weight_decay=weight_decay,
+            nesterov=nesterov,
+            stiefel=stiefel,
+            omega=omega,
+            grad_clip=grad_clip,
+            retraction_iters=retraction_iters,
+            use_qr=use_qr,
+        )
+        if nesterov and (momentum <= 0 or dampening != 0):
+            raise ValueError("Nesterov momentum requires a momentum and zero dampening")
+        super().__init__(params, defaults)
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('nesterov', False)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            momentum = group['momentum']
+            stiefel = group['stiefel']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                X = _stiefel_like(p.data)
+                if stiefel and X.size()[1] <= X.size()[0]:
+                    weight_decay = group['weight_decay']
+                    dampening = group['dampening']
+                    nesterov = group['nesterov']
+
+                    if random.randint(1, 101) == 1:
+                        X = qr_retraction(X.T).T
+
+                    g = p.grad.data.view(p.size()[0], -1)
+                    lr = group['lr']
+
+                    param_state = self.state[p]
+                    momentum_buffer = param_state.get('momentum_buffer')
+                    g_t = -g.T
+                    if momentum_buffer is None:
+                        momentum_buffer = torch.zeros_like(g_t)
+                        param_state['momentum_buffer'] = momentum_buffer
+                        momentum_buffer.copy_(g_t)
+                    else:
+                        momentum_buffer.mul_(momentum).add_(1 - momentum, g_t)
+
+                    MX = momentum_buffer.T @ X
+                    momentum_proj = momentum_buffer - 0.5 * X @ (MX + MX.T)
+
+                    if group['use_qr']:
+                        direction = qr_retraction(momentum_proj)
+                    else:
+                        direction = cans_retraction(momentum_proj, iters=group['retraction_iters'])
+
+                    if group['use_qr']:
+                        p_new = qr_retraction((X + lr * direction).T)
+                    else:
+                        p_new = cans_retraction(
+                            X + lr * direction,
+                            iters=group['retraction_iters'],
+                        ).T
+
+                    p.data.copy_(p_new.view_as(p))
+
+                else:
+                    d_p = p.grad.data
+                    if group['weight_decay'] != 0:
+                        d_p = d_p.add(group['weight_decay'], p.data)
+                    if momentum != 0:
+                        param_state = self.state[p]
+                        buf = param_state.get('momentum_buffer')
+                        if buf is None:
+                            buf = d_p.clone().detach()
+                            param_state['momentum_buffer'] = buf
+                        else:
+                            buf.mul_(momentum).add_(1 - dampening, d_p)
+                        if nesterov:
+                            d_p = d_p.add(momentum, buf)
+                        else:
+                            d_p = buf
+
+                    p.data.add_(-group['lr'], d_p)
+
+        return loss
+
+
 class CANS_Adam(Optimizer):
     r"""Adam variant with CANS retraction for Stiefel-constrained params."""
 
