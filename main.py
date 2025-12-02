@@ -20,7 +20,7 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 import torchnet as tnt
 from torchnet.engine import Engine
-from utils import cast, data_parallel
+from utils import cast, data_parallel, resolve_device, set_default_device
 import torch.backends.cudnn as cudnn
 from resnet import resnet
 from vgg import vgg
@@ -37,7 +37,7 @@ parser.add_argument('--model', default='resnet', type=str)
 parser.add_argument('--depth', default=16, type=int)
 parser.add_argument('--width', default=1, type=float)
 parser.add_argument('--dataset', default='CIFAR10', type=str)
-parser.add_argument('--dataroot', default='/scratch/liju2/data/', type=str)
+parser.add_argument('--dataroot', default='./data', type=str)
 parser.add_argument('--dtype', default='float', type=str)
 parser.add_argument('--groups', default=1, type=int)
 parser.add_argument('--nthread', default=4, type=int)
@@ -60,7 +60,8 @@ parser.add_argument('--optim_method', default='SGD', type=str)
 parser.add_argument('--randomcrop_pad', default=4, type=float)
 
 # Device options
-parser.add_argument('--cuda', action='store_true')
+parser.add_argument('--device', default='auto', type=str,
+                    help='device to run on: auto, cpu, cuda, or mps')
 parser.add_argument('--save', default='', type=str,
                     help='save parameters and logs in this folder')
 parser.add_argument('--ngpu', default=1, type=int,
@@ -96,26 +97,63 @@ def create_dataset(opt, mode):
 
     ds = getattr(datasets, opt.dataset)(opt.dataroot, train=mode, download=True)
     smode = 'train' if mode else 'test'
-    ds = tnt.dataset.TensorDataset([getattr(ds, smode + '_data'),
-                                    getattr(ds, smode + '_labels')])
+
+    def _get_attr(obj, primary, fallback=None):
+        value = getattr(obj, primary, None)
+        if value is not None:
+            return value
+        if fallback:
+            value = getattr(obj, fallback, None)
+            if value is not None:
+                return value
+        raise AttributeError(
+            f"'{type(obj).__name__}' object has no attribute '{primary}' or '{fallback}'"
+        )
+
+    data = _get_attr(ds, f"{smode}_data", "data")
+    labels = _get_attr(ds, f"{smode}_labels", "targets")
+
+    # torchvision>=0.10 returns labels as a list; convert to numpy for transforms
+    if isinstance(labels, list):
+        labels = np.array(labels)
+
+    ds = tnt.dataset.TensorDataset([data, labels])
     return ds.transform({0: train_transform if mode else convert})
+
+
+def resolve_dataroot(path):
+    dataroot = os.path.abspath(os.path.expanduser(path))
+    try:
+        os.makedirs(dataroot, exist_ok=True)
+    except OSError as e:
+        raise RuntimeError(
+            f"Unable to create dataset directory '{dataroot}'. "
+            "Please set --dataroot to a writable location."
+        ) from e
+    return dataroot
 
 
 def main():
     opt = parser.parse_args()
+    opt.dataroot = resolve_dataroot(opt.dataroot)
     print('parsed options:', vars(opt))
     epoch_step = json.loads(opt.epoch_step)
     num_classes = 100 if opt.dataset == 'CIFAR100' else 10
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpu_id
-    # to prevent opencv from initializing CUDA in workers
-    torch.randn(8).cuda()
-    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+    device = resolve_device(opt.device)
+    set_default_device(device)
+    if device.type == 'cuda':
+        os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpu_id
+        cudnn.benchmark = True
+    else:
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+        cudnn.benchmark = False
+    print('Using device:', device)
 
     def create_iterator(mode):
         ds = create_dataset(opt, mode)
         return ds.parallel(batch_size=opt.batchSize, shuffle=mode,
-                           num_workers=opt.nthread, pin_memory=True)
+                           num_workers=opt.nthread, pin_memory=(device.type=='cuda'))
 
     train_loader = create_iterator(True)
     test_loader = create_iterator(False)
@@ -183,7 +221,7 @@ def main():
 
     epoch = 0
     if opt.resume != '':
-        state_dict = torch.load(opt.resume)
+        state_dict = torch.load(opt.resume, map_location=device)
         epoch = state_dict['epoch']
         params_tensors, stats = state_dict['params'], state_dict['stats']
         for k, v in list(params.items()):
@@ -210,8 +248,8 @@ def main():
     timer_train = tnt.meter.TimeMeter('s')
     timer_test = tnt.meter.TimeMeter('s')
 
-    if not os.path.exists(opt.save):
-        os.mkdir(opt.save)
+    if opt.save:
+        os.makedirs(opt.save, exist_ok=True)
 
     def h(sample):
         inputs = Variable(cast(sample[0], opt.dtype))
