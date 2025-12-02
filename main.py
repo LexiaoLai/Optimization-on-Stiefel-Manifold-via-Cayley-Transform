@@ -248,8 +248,8 @@ def main():
     timer_train = tnt.meter.TimeMeter('s')
     timer_test = tnt.meter.TimeMeter('s')
 
-    if not os.path.exists(opt.save):
-        os.mkdir(opt.save)
+    if opt.save:
+        os.makedirs(opt.save, exist_ok=True)
 
     def h(sample):
         inputs = Variable(cast(sample[0], opt.dtype))
