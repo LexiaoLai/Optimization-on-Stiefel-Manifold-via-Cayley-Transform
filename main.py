@@ -37,7 +37,7 @@ parser.add_argument('--model', default='resnet', type=str)
 parser.add_argument('--depth', default=16, type=int)
 parser.add_argument('--width', default=1, type=float)
 parser.add_argument('--dataset', default='CIFAR10', type=str)
-parser.add_argument('--dataroot', default='/scratch/liju2/data/', type=str)
+parser.add_argument('--dataroot', default='./data', type=str)
 parser.add_argument('--dtype', default='float', type=str)
 parser.add_argument('--groups', default=1, type=int)
 parser.add_argument('--nthread', default=4, type=int)
@@ -102,8 +102,21 @@ def create_dataset(opt, mode):
     return ds.transform({0: train_transform if mode else convert})
 
 
+def resolve_dataroot(path):
+    dataroot = os.path.abspath(os.path.expanduser(path))
+    try:
+        os.makedirs(dataroot, exist_ok=True)
+    except OSError as e:
+        raise RuntimeError(
+            f"Unable to create dataset directory '{dataroot}'. "
+            "Please set --dataroot to a writable location."
+        ) from e
+    return dataroot
+
+
 def main():
     opt = parser.parse_args()
+    opt.dataroot = resolve_dataroot(opt.dataroot)
     print('parsed options:', vars(opt))
     epoch_step = json.loads(opt.epoch_step)
     num_classes = 100 if opt.dataset == 'CIFAR100' else 10
