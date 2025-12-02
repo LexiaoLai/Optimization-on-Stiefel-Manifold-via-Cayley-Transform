@@ -27,6 +27,7 @@ from vgg import vgg
 
 import grassmann_optimizer
 import stiefel_optimizer
+import cans_optimizer
 from gutils import unit, qr_retraction
 
 cudnn.benchmark = True
@@ -58,6 +59,10 @@ parser.add_argument('--lr_decay_ratio', default=0.2, type=float)
 parser.add_argument('--resume', default='', type=str)
 parser.add_argument('--optim_method', default='SGD', type=str)
 parser.add_argument('--randomcrop_pad', default=4, type=float)
+parser.add_argument('--cans_retraction_iters', default=1, type=int,
+                    help='number of CANS retraction refinement steps')
+parser.add_argument('--cans_use_qr', action='store_true',
+                    help='use QR instead of CANS retraction inside CANS optimizers')
 
 # Device options
 parser.add_argument('--device', default='auto', type=str,
@@ -184,7 +189,7 @@ def main():
     f, params, stats = model(opt.depth, opt.width, num_classes)
 
     key_g = []
-    if opt.optim_method in ['SGDG', 'AdamG', 'Cayley_SGD', 'Cayley_Adam'] :
+    if opt.optim_method in ['SGDG', 'AdamG', 'Cayley_SGD', 'Cayley_Adam', 'CANS_SGD', 'CANS_Adam'] :
         param_g = []
         param_e0 = []
         param_e1 = []
@@ -195,12 +200,12 @@ def main():
                 key_g.append(key)
                 if opt.optim_method in ['SGDG', 'AdamG']:
                     # initlize to scale 1
-                    unitp, _ = unit(value.data.view(value.size(0), -1)) 
+                    unitp, _ = unit(value.data.view(value.size(0), -1))
                     value.data.copy_(unitp.view(value.size()))
-                elif opt.optim_method in ['Cayley_SGD', 'Cayley_Adam']:
+                elif opt.optim_method in ['Cayley_SGD', 'Cayley_Adam', 'CANS_SGD', 'CANS_Adam']:
                     # initlize to orthogonal matrix
-                    q = qr_retraction(value.data.view(value.size(0), -1)) 
-                    value.data.copy_(q.view(value.size()))               
+                    q = qr_retraction(value.data.view(value.size(0), -1))
+                    value.data.copy_(q.view(value.size()))
             elif 'bn' in key or 'bias' in key:
                 param_e0.append(value)
             else:
@@ -234,6 +239,32 @@ def main():
             dict_e0 = {'params':param_e0,'lr':lr,'momentum':0.9,'stiefel':False,'weight_decay':opt.bnDecay,'nesterov':True}
             dict_e1 = {'params':param_e1,'lr':lr,'momentum':0.9,'stiefel':False,'weight_decay':opt.weightDecay,'nesterov':True}
             return stiefel_optimizer.AdamG([dict_g, dict_e0, dict_e1])
+
+        elif opt.optim_method == 'CANS_SGD':
+            dict_g = {
+                'params': param_g,
+                'lr': lrg,
+                'momentum': 0.9,
+                'stiefel': True,
+                'retraction_iters': opt.cans_retraction_iters,
+                'use_qr': opt.cans_use_qr,
+            }
+            dict_e0 = {'params': param_e0, 'lr': lr, 'momentum': 0.9, 'stiefel': False, 'weight_decay': opt.bnDecay, 'nesterov': True}
+            dict_e1 = {'params': param_e1, 'lr': lr, 'momentum': 0.9, 'stiefel': False, 'weight_decay': opt.weightDecay, 'nesterov': True}
+            return cans_optimizer.CANS_SGD([dict_g, dict_e0, dict_e1])
+
+        elif opt.optim_method == 'CANS_Adam':
+            dict_g = {
+                'params': param_g,
+                'lr': lrg,
+                'momentum': 0.9,
+                'stiefel': True,
+                'retraction_iters': opt.cans_retraction_iters,
+                'use_qr': opt.cans_use_qr,
+            }
+            dict_e0 = {'params': param_e0, 'lr': lr, 'momentum': 0.9, 'stiefel': False, 'weight_decay': opt.bnDecay, 'nesterov': True}
+            dict_e1 = {'params': param_e1, 'lr': lr, 'momentum': 0.9, 'stiefel': False, 'weight_decay': opt.weightDecay, 'nesterov': True}
+            return cans_optimizer.CANS_Adam([dict_g, dict_e0, dict_e1])
 
     optimizer = create_optimizer(opt, opt.lr, opt.lrg)
 

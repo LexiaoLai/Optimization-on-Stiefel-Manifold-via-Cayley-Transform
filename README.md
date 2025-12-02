@@ -23,6 +23,8 @@ pip install -r requirements.txt
 By default datasets are downloaded to `./data` under the project root. Use `--dataroot /path/to/writable/folder` if you prefer
 another location (for example, when the default directory is read-only).
 
+The `--device auto` default picks CUDA when available, falls back to MPS on Apple Silicon, and otherwise uses CPU. Pass `--device cuda` to force NVIDIA GPUs.
+
 On Apple Silicon, PyTorch currently lacks an MPS implementation of QR; the training code automatically runs this step on CPU so
 you can train with `--device mps` without additional flags.
 
@@ -36,6 +38,8 @@ CIFAR-10:
 [Adam-G] python main.py --save ./logs/cifar10/resnet/depth28width10/AdamG$RANDOM$RANDOM --model resnet --depth 28 --width 10 --optim_method AdamG --lr 0.01 --lrg 0.05 --gpu_id 0
 [Cayley-SGD] python main.py --save ./logs/cifar10/resnet/depth28width10/CayleySGD$RANDOM$RANDOM --model resnet --depth 28 --width 10 --optim_method Cayley_SGD --lr 0.8 --lrg 0.1 --lr_decay_ratio 0.2 --gpu_id 0
 [Cayley-Adam] python main.py --save ./logs/cifar10/resnet/depth28width10/CayleyAdam$RANDOM$RANDOM --model resnet --depth 28 --width 10 --optim_method Cayley_Adam --lr 0.5 --lrg 0.1 --lr_decay_ratio 0.2 --gpu_id 0
+[CANS-SGD] python main.py --save ./logs/cifar10/resnet/depth28width10/CANSSGD$RANDOM$RANDOM --model resnet --depth 28 --width 10 --optim_method CANS_SGD --lr 0.8 --lrg 0.1 --lr_decay_ratio 0.2 --gpu_id 0
+[CANS-Adam] python main.py --save ./logs/cifar10/resnet/depth28width10/CANSAdam$RANDOM$RANDOM --model resnet --depth 28 --width 10 --optim_method CANS_Adam --lr 0.5 --lrg 0.1 --lr_decay_ratio 0.2 --gpu_id 0
 ```
 CIFAR-100:
 ```
@@ -44,7 +48,11 @@ CIFAR-100:
 [Adam-G] python main.py --save ./logs/cifar100/resnet/depth28width10/AdamG$RANDOM$RANDOM --model resnet --depth 28 --width 10 --optim_method AdamG --lr 0.01 --lrg 0.05 --dataset CIFAR100 --gpu_id 0
 [Cayley-SGD] python main.py --save ./logs/cifar100/resnet/depth28width10/CayleySGD$RANDOM$RANDOM --model resnet --depth 28 --width 10 --optim_method Cayley_SGD --lr 0.8 --lrg 0.1 --lr_decay_ratio 0.2 --dataset CIFAR100 --gpu_id 0
 [Cayley-Adam] python main.py --save ./logs/cifar100/resnet/depth28width10/CayleyAdam$RANDOM$RANDOM --model resnet --depth 28 --width 10 --optim_method Cayley_Adam --lr 0.5 --lrg 0.1 --lr_decay_ratio 0.2 --dataset CIFAR100 --gpu_id 0
+[CANS-SGD] python main.py --save ./logs/cifar100/resnet/depth28width10/CANSSGD$RANDOM$RANDOM --model resnet --depth 28 --width 10 --optim_method CANS_SGD --lr 0.8 --lrg 0.1 --lr_decay_ratio 0.2 --dataset CIFAR100 --gpu_id 0
+[CANS-Adam] python main.py --save ./logs/cifar100/resnet/depth28width10/CANSAdam$RANDOM$RANDOM --model resnet --depth 28 --width 10 --optim_method CANS_Adam --lr 0.5 --lrg 0.1 --lr_decay_ratio 0.2 --dataset CIFAR100 --gpu_id 0
 ```
+
+For the CANS optimizers you can switch between QR-based retraction and the iterative CANS orthogonalization. Use `--cans_use_qr` to force QR, or adjust `--cans_retraction_iters` (default 1) to change the number of refinement steps in CANS retraction.
 
 ## To apply this algorithm to your model
 [stiefel_optimizer.py](https://github.com/JunLi-Galios/Optimization-on-Stiefel-Manifold-via-Cayley-Transform/blob/master/stiefel_optimizer.py) is the main implementation which provides the proposed Cayley_SGD and Cayley_Adam optimizer. [main.py](https://github.com/JunLi-Galios/Optimization-on-Stiefel-Manifold-via-Cayley-Transform/blob/master/main.py) includes all the steps to apply the provided optimizers to your model.
