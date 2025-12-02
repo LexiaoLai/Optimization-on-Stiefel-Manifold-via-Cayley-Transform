@@ -15,10 +15,7 @@ def xTy(x, y):
 import pdb
 def clip_by_norm(v, clip_norm):
     v_norm = norm(v)
-    if v.is_cuda:
-        scale = torch.ones(v_norm.size()).cuda()
-    else:
-        scale = torch.ones(v_norm.size())
+    scale = torch.ones(v_norm.size(), device=v.device)
     mask = v_norm > clip_norm
     scale[mask] = clip_norm/v_norm[mask]
 
@@ -32,13 +29,13 @@ def skew_matrix(y): # y n-by-n
     assert y.size()[0]==y.size()[1]
     return  (y - y.t())/2
 
-def stiefel_proj_tan(y, g): # y,g p-by-n, p <= n 
+def stiefel_proj_tan(y, g): # y,g p-by-n, p <= n
     [p,n] = y.size()
     skew = skew_matrix(torch.matmul(y, g.t()))
     reflect = torch.matmul(y.t(), y)
-    identity = torch.eye(n).cuda()
+    identity = torch.eye(n, device=y.device)
     reflect = identity - reflect
-    tan_vec = torch.matmul(y.t(), skew) + torch.matmul(reflect, g.t()) 
+    tan_vec = torch.matmul(y.t(), skew) + torch.matmul(reflect, g.t())
     tan_vec.t_()
     return  tan_vec
 
@@ -74,7 +71,7 @@ def Cayley_loop(X, W, tan_vec, t): #
 
 def check_identity(X):#n-by-p
     n,p = X.size()
-    res = torch.eye(p).cuda() - torch.mm(X.t(), X)
+    res = torch.eye(p, device=X.device) - torch.mm(X.t(), X)
     print('n={0}, p={1}, res norm={2}'.format(n, p ,torch.norm(res)))
 
 def stiefel_transport(y, g): # y,g p-by-n, p <= n, project g onto the tangent space of y      
