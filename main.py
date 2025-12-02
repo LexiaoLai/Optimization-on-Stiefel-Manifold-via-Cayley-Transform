@@ -69,6 +69,24 @@ parser.add_argument('--ngpu', default=1, type=int,
 parser.add_argument('--gpu_id', default='0', type=str,
                     help='id(s) for CUDA_VISIBLE_DEVICES')
 
+def _to_float32(x):
+    return x.astype(np.float32)
+
+
+def _hwc_to_chw_float32(x):
+    return x.transpose(2, 0, 1).astype(np.float32)
+
+
+class Compose:
+    def __init__(self, transforms):
+        self.transforms = transforms
+
+    def __call__(self, x):
+        for t in self.transforms:
+            x = t(x)
+        return x
+
+
 def create_dataset(opt, mode):
     if opt.dataset == 'CIFAR10':
         mean = [125.3, 123.0, 113.9]
@@ -81,14 +99,14 @@ def create_dataset(opt, mode):
         std = [1.0, 1.0, 1.0]
 
 
-    convert = tnt.transform.compose([
-        lambda x: x.astype(np.float32),
+    convert = Compose([
+        _to_float32,
         T.Normalize(mean, std),
-        lambda x: x.transpose(2,0,1).astype(np.float32),
+        _hwc_to_chw_float32,
         torch.from_numpy,
     ])
 
-    train_transform = tnt.transform.compose([
+    train_transform = Compose([
         T.RandomHorizontalFlip(),
         T.Pad(opt.randomcrop_pad, cv2.BORDER_REFLECT),
         T.RandomCrop(32),
