@@ -99,11 +99,16 @@ def create_dataset(opt, mode):
     smode = 'train' if mode else 'test'
 
     def _get_attr(obj, primary, fallback=None):
-        if hasattr(obj, primary):
-            return getattr(obj, primary)
-        if fallback and hasattr(obj, fallback):
-            return getattr(obj, fallback)
-        raise AttributeError(f"'{type(obj).__name__}' object has no attribute '{primary}'")
+        value = getattr(obj, primary, None)
+        if value is not None:
+            return value
+        if fallback:
+            value = getattr(obj, fallback, None)
+            if value is not None:
+                return value
+        raise AttributeError(
+            f"'{type(obj).__name__}' object has no attribute '{primary}' or '{fallback}'"
+        )
 
     data = _get_attr(ds, f"{smode}_data", "data")
     labels = _get_attr(ds, f"{smode}_labels", "targets")

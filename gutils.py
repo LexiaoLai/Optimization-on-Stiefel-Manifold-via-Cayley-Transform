@@ -52,14 +52,22 @@ def polar_retraction(tan_vec): # tan_vec, p-by-n, p <= n
 
 def qr_retraction(tan_vec): # tan_vec, p-by-n, p <= n
     [p,n] = tan_vec.size()
-    tan_vec.t_()
-    q,r = torch.qr(tan_vec)
+    tan_vec_t = tan_vec.t()
+
+    # torch.linalg.qr is not implemented on MPS; fall back to CPU when needed.
+    if tan_vec_t.device.type == "mps":
+        tan_vec_qr = tan_vec_t.cpu()
+        q, r = torch.linalg.qr(tan_vec_qr, mode="reduced")
+        q = q.to(tan_vec_t.device)
+        r = r.to(tan_vec_t.device)
+    else:
+        q, r = torch.linalg.qr(tan_vec_t, mode="reduced")
+
     d = torch.diag(r, 0)
     ph = d.sign()
-    q *= ph.expand_as(q)
-    q.t_()
-    
-    return q
+    q = q * ph.expand_as(q)
+
+    return q.t()
   
 def Cayley_loop(X, W, tan_vec, t): # 
     [n, p] = X.size()

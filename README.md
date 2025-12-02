@@ -23,6 +23,9 @@ pip install -r requirements.txt
 By default datasets are downloaded to `./data` under the project root. Use `--dataroot /path/to/writable/folder` if you prefer
 another location (for example, when the default directory is read-only).
 
+On Apple Silicon, PyTorch currently lacks an MPS implementation of QR; the training code automatically runs this step on CPU so
+you can train with `--device mps` without additional flags.
+
 ## Train
 The commands below are examples.
 
