@@ -189,7 +189,7 @@ def main():
     f, params, stats = model(opt.depth, opt.width, num_classes)
 
     key_g = []
-    if opt.optim_method in ['SGDG', 'AdamG', 'Cayley_SGD', 'Cayley_Adam', 'CANS_SGD', 'CANS_Adam'] :
+    if opt.optim_method in ['SGDG', 'AdamG', 'Cayley_SGD', 'Cayley_Adam', 'CANS_SGD', 'CANS_Adam', 'CANS_CSD'] :
         param_g = []
         param_e0 = []
         param_e1 = []
@@ -252,6 +252,19 @@ def main():
             dict_e0 = {'params': param_e0, 'lr': lr, 'momentum': 0.9, 'stiefel': False, 'weight_decay': opt.bnDecay, 'nesterov': True}
             dict_e1 = {'params': param_e1, 'lr': lr, 'momentum': 0.9, 'stiefel': False, 'weight_decay': opt.weightDecay, 'nesterov': True}
             return cans_optimizer.CANS_SGD([dict_g, dict_e0, dict_e1])
+
+        elif opt.optim_method == 'CANS_CSD':
+            dict_g = {
+                'params': param_g,
+                'lr': lrg,
+                'momentum': 0.9,
+                'stiefel': True,
+                'retraction_iters': opt.cans_retraction_iters,
+                'use_qr': opt.cans_use_qr,
+            }
+            dict_e0 = {'params': param_e0, 'lr': lr, 'momentum': 0.9, 'stiefel': False, 'weight_decay': opt.bnDecay, 'nesterov': True}
+            dict_e1 = {'params': param_e1, 'lr': lr, 'momentum': 0.9, 'stiefel': False, 'weight_decay': opt.weightDecay, 'nesterov': True}
+            return cans_optimizer.CANS_CSD([dict_g, dict_e0, dict_e1])
 
         elif opt.optim_method == 'CANS_Adam':
             dict_g = {
