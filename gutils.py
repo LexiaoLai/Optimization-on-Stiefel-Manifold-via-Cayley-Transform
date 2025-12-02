@@ -15,10 +15,7 @@ def xTy(x, y):
 import pdb
 def clip_by_norm(v, clip_norm):
     v_norm = norm(v)
-    if v.is_cuda:
-        scale = torch.ones(v_norm.size()).cuda()
-    else:
-        scale = torch.ones(v_norm.size())
+    scale = torch.ones(v_norm.size(), device=v.device)
     mask = v_norm > clip_norm
     scale[mask] = clip_norm/v_norm[mask]
 
@@ -32,13 +29,13 @@ def skew_matrix(y): # y n-by-n
     assert y.size()[0]==y.size()[1]
     return  (y - y.t())/2
 
-def stiefel_proj_tan(y, g): # y,g p-by-n, p <= n 
+def stiefel_proj_tan(y, g): # y,g p-by-n, p <= n
     [p,n] = y.size()
     skew = skew_matrix(torch.matmul(y, g.t()))
     reflect = torch.matmul(y.t(), y)
-    identity = torch.eye(n).cuda()
+    identity = torch.eye(n, device=y.device)
     reflect = identity - reflect
-    tan_vec = torch.matmul(y.t(), skew) + torch.matmul(reflect, g.t()) 
+    tan_vec = torch.matmul(y.t(), skew) + torch.matmul(reflect, g.t())
     tan_vec.t_()
     return  tan_vec
 
@@ -55,14 +52,22 @@ def polar_retraction(tan_vec): # tan_vec, p-by-n, p <= n
 
 def qr_retraction(tan_vec): # tan_vec, p-by-n, p <= n
     [p,n] = tan_vec.size()
-    tan_vec.t_()
-    q,r = torch.qr(tan_vec)
+    tan_vec_t = tan_vec.t()
+
+    # torch.linalg.qr is not implemented on MPS; fall back to CPU when needed.
+    if tan_vec_t.device.type == "mps":
+        tan_vec_qr = tan_vec_t.cpu()
+        q, r = torch.linalg.qr(tan_vec_qr, mode="reduced")
+        q = q.to(tan_vec_t.device)
+        r = r.to(tan_vec_t.device)
+    else:
+        q, r = torch.linalg.qr(tan_vec_t, mode="reduced")
+
     d = torch.diag(r, 0)
     ph = d.sign()
-    q *= ph.expand_as(q)
-    q.t_()
-    
-    return q
+    q = q * ph.expand_as(q)
+
+    return q.t()
   
 def Cayley_loop(X, W, tan_vec, t): # 
     [n, p] = X.size()
@@ -74,7 +79,7 @@ def Cayley_loop(X, W, tan_vec, t): #
 
 def check_identity(X):#n-by-p
     n,p = X.size()
-    res = torch.eye(p).cuda() - torch.mm(X.t(), X)
+    res = torch.eye(p, device=X.device) - torch.mm(X.t(), X)
     print('n={0}, p={1}, res norm={2}'.format(n, p ,torch.norm(res)))
 
 def stiefel_transport(y, g): # y,g p-by-n, p <= n, project g onto the tangent space of y      

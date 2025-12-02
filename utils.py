@@ -1,23 +1,51 @@
 import math
 import torch
 import torch.nn as nn
-import torch.cuda.comm as comm
-from torch.nn.parallel._functions import Broadcast
-from torch.nn.parallel import scatter, parallel_apply, gather
 from functools import partial
 from torch.autograd import Variable
 from nested_dict import nested_dict
 from collections import OrderedDict
 
-def cast(params, dtype='float'):
+if torch.cuda.is_available():
+    import torch.cuda.comm as comm
+    from torch.nn.parallel._functions import Broadcast
+    from torch.nn.parallel import scatter, parallel_apply, gather
+else:
+    comm = Broadcast = scatter = parallel_apply = gather = None
+
+
+def resolve_device(preferred='auto'):
+    """Choose a torch.device, preferring CUDA, then MPS, then CPU."""
+    if preferred != 'auto':
+        return torch.device(preferred)
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    if torch.backends.mps.is_available():
+        return torch.device('mps')
+    return torch.device('cpu')
+
+
+DEFAULT_DEVICE = resolve_device()
+
+
+def set_default_device(device):
+    global DEFAULT_DEVICE
+    DEFAULT_DEVICE = torch.device(device)
+
+
+def get_default_device():
+    return DEFAULT_DEVICE
+
+def cast(params, dtype='float', device=None):
+    device = device or get_default_device()
     if isinstance(params, dict):
-        return {k: cast(v, dtype) for k,v in params.items()}
+        return {k: cast(v, dtype, device) for k,v in params.items()}
     else:
-        return getattr(params.cuda(), dtype)()
+        return getattr(params.to(device), dtype)()
         
 
 def conv_params(ni,no,k=1,g=1):
-    assert ni % g == 0    
+    assert ni % g == 0
     return cast(nn.init.orthogonal_(torch.Tensor(no,ni//g,k,k)))
 
 def linear_params(ni,no):
@@ -37,10 +65,10 @@ def bnstats(n):
         running_var=torch.ones(n)))
 
 def data_parallel(f, input, params, stats, mode, device_ids, output_device=None):
-    if output_device is None:
+    if output_device is None and device_ids:
         output_device = device_ids[0]
 
-    if len(device_ids) == 1:
+    if len(device_ids) == 1 or not torch.cuda.is_available():
         return f(input, params, stats, mode)
 
     def replicate(param_dict, g):
