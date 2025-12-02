@@ -97,8 +97,22 @@ def create_dataset(opt, mode):
 
     ds = getattr(datasets, opt.dataset)(opt.dataroot, train=mode, download=True)
     smode = 'train' if mode else 'test'
-    ds = tnt.dataset.TensorDataset([getattr(ds, smode + '_data'),
-                                    getattr(ds, smode + '_labels')])
+
+    def _get_attr(obj, primary, fallback=None):
+        if hasattr(obj, primary):
+            return getattr(obj, primary)
+        if fallback and hasattr(obj, fallback):
+            return getattr(obj, fallback)
+        raise AttributeError(f"'{type(obj).__name__}' object has no attribute '{primary}'")
+
+    data = _get_attr(ds, f"{smode}_data", "data")
+    labels = _get_attr(ds, f"{smode}_labels", "targets")
+
+    # torchvision>=0.10 returns labels as a list; convert to numpy for transforms
+    if isinstance(labels, list):
+        labels = np.array(labels)
+
+    ds = tnt.dataset.TensorDataset([data, labels])
     return ds.transform({0: train_transform if mode else convert})
 
 
